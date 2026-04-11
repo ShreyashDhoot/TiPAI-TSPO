@@ -1,0 +1,39 @@
+model:
+  base_model: runwayml/stable-diffusion-inpainting
+  hf_dataset_repo: ShreyashDhoot/dataset_latents_VAE
+  use_lora: true
+  lora:
+    r: 16
+    lora_alpha: 32
+    target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+    lora_dropout: 0.05
+    bias: "none"
+
+data:
+  train_subdir: train
+  val_subdir: val
+  cache_dir: ./hf_cache
+
+training:
+  lr: 1.0e-5
+  warmup_steps: 100
+  max_steps: 5000
+  max_epochs: 100
+  batch_size: 4
+  grad_accum_steps: 4
+  beta: 0.1
+  num_workers: 0
+  log_every: 50
+  save_every: 500
+  grad_clip_norm: 1.0
+  mixed_precision: fp16
+
+output:
+  checkpoint_dir: ./checkpoints
+  eval_dir: ./eval_outputs
+  wandb_project: sd-inpaint-kto-safety
+  use_wandb: true
+  wandb_mode: online  # online, offline, or disabled
+  wandb_entity: null
+  wandb_run_name: null
+  wandb_tags: []
