@@ -13,7 +13,6 @@ import io
 import os
 import tempfile
 import math
-import time
 from dataclasses import dataclass
 from itertools import islice
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
@@ -95,27 +94,20 @@ class MaskShardUploader:
         if not self.rows:
             return
 
-        ds = Dataset.from_list(self.rows, features=self.features,num_proc=1)
+        ds = Dataset.from_list(self.rows, features=self.features, num_proc=1)
         buffer = io.BytesIO()
         ds.to_parquet(buffer)
         buffer.seek(0)
 
-            path_in_repo = f"{self.path_prefix}/train-{self.shard_idx:05d}-of-NNNNN.parquet"
-            t2 = time.time()
-            self.api.upload_file(
-                path_or_fileobj=tmp_path,
-                path_in_repo=path_in_repo,
-                repo_id=self.repo_id,
-                repo_type="dataset",
-                commit_message=f"Upload shard {self.shard_idx}",
-            )
-            print(f"[MASK] Upload finished in {time.time() - t2:.1f}s")
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-        elapsed = time.time() - flush_started
-        print(f"[MASK] Uploaded shard {self.shard_idx} -> {path_in_repo} ({elapsed:.1f}s total)")
+        path_in_repo = f"{self.path_prefix}/train-{self.shard_idx:05d}-of-NNNNN.parquet"
+        self.api.upload_file(
+            path_or_fileobj=buffer,
+            path_in_repo=path_in_repo,
+            repo_id=self.repo_id,
+            repo_type="dataset",
+            commit_message=f"Upload shard {self.shard_idx}",
+        )
+        print(f"[MASK] Uploaded shard {self.shard_idx} -> {path_in_repo}")
 
         self.shard_idx += 1
         self.rows = []
