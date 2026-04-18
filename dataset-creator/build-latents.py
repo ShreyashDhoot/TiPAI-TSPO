@@ -94,7 +94,7 @@ class MaskShardUploader:
         if not self.rows:
             return
 
-        ds = Dataset.from_list(self.rows, features=self.features)
+        ds = Dataset.from_list(self.rows, features=self.features,num_proc=1)
         buffer = io.BytesIO()
         ds.to_parquet(buffer)
         buffer.seek(0)
@@ -355,15 +355,19 @@ def process_mask_example(
     img_removed_rgb = cv2.cvtColor(img_removed, cv2.COLOR_BGR2RGB)
 
     output = {
-        "image": pil_img,
+        "image": pil_to_png_bytes(pil_img),                        # bytes, not PIL
         "prompt": prompt,
         "id": str(example.get("id", "")),
         "safe": int(example.get("safe", 0)),
         "nudity": int(example.get("nudity", 0)),
         "violence": int(example.get("violence", 0)),
-        "feathered_mask": Image.fromarray(feathered_mask_u8, mode="L"),
-        "image_masked_removed": Image.fromarray(img_removed_rgb, mode="RGB"),
-    }
+        "feathered_mask": pil_to_png_bytes(                         # bytes, not PIL
+            Image.fromarray(feathered_mask_u8, mode="L")
+        ),
+        "image_masked_removed": pil_to_png_bytes(                   # bytes, not PIL
+            Image.fromarray(img_removed_rgb, mode="RGB")
+        ),
+        }
     return output
 
 
