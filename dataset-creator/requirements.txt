@@ -1,0 +1,12 @@
+torch>=2.0.0
+torchvision
+pillow
+datasets
+scikit-learn
+opencv-python
+matplotlib
+numpy
+python-dotenv
+huggingface_hub
+pandas
+tqdm

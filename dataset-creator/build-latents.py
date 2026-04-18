@@ -13,6 +13,7 @@ import io
 import os
 import tempfile
 import math
+import time
 from dataclasses import dataclass
 from itertools import islice
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
@@ -94,20 +95,38 @@ class MaskShardUploader:
         if not self.rows:
             return
 
-        ds = Dataset.from_list(self.rows, features=self.features)
-        buffer = io.BytesIO()
-        ds.to_parquet(buffer)
-        buffer.seek(0)
+        print(f"[MASK] Flushing shard {self.shard_idx} with {len(self.rows)} rows...")
+        flush_started = time.time()
 
-        path_in_repo = f"{self.path_prefix}/train-{self.shard_idx:05d}-of-NNNNN.parquet"
-        self.api.upload_file(
-            path_or_fileobj=buffer,
-            path_in_repo=path_in_repo,
-            repo_id=self.repo_id,
-            repo_type="dataset",
-            commit_message=f"Upload shard {self.shard_idx}",
-        )
-        print(f"Uploaded mask shard: {path_in_repo}")
+        t0 = time.time()
+        ds = Dataset.from_list(self.rows, features=self.features)
+        print(f"[MASK] Dataset materialized in {time.time() - t0:.1f}s")
+
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            t1 = time.time()
+            ds.to_parquet(tmp_path)
+            parquet_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+            print(f"[MASK] Parquet written in {time.time() - t1:.1f}s ({parquet_size_mb:.1f} MB)")
+
+            path_in_repo = f"{self.path_prefix}/train-{self.shard_idx:05d}-of-NNNNN.parquet"
+            t2 = time.time()
+            self.api.upload_file(
+                path_or_fileobj=tmp_path,
+                path_in_repo=path_in_repo,
+                repo_id=self.repo_id,
+                repo_type="dataset",
+                commit_message=f"Upload shard {self.shard_idx}",
+            )
+            print(f"[MASK] Upload finished in {time.time() - t2:.1f}s")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        elapsed = time.time() - flush_started
+        print(f"[MASK] Uploaded shard {self.shard_idx} -> {path_in_repo} ({elapsed:.1f}s total)")
 
         self.shard_idx += 1
         self.rows = []
@@ -406,8 +425,10 @@ def run_mask_stage(args, api: HfApi) -> None:
     )
 
     new_count = 0
-    for example in tqdm(source_stream, desc="Mask stage"):
+    pbar = tqdm(source_stream, desc="Mask stage", dynamic_ncols=True, unit="sample")
+    for example in pbar:
         sample_id = str(example.get("id", ""))
+        pbar.set_postfix_str(f"id={sample_id} processed={new_count}")
         if args.resume_masks and sample_id in processed_ids:
             continue
 
@@ -430,12 +451,14 @@ def run_mask_stage(args, api: HfApi) -> None:
             )
             uploader.add(row)
             new_count += 1
+            pbar.set_postfix_str(f"id={sample_id} processed={new_count} queued={len(uploader.rows)}")
 
             if args.max_mask_samples and new_count >= args.max_mask_samples:
                 break
         except Exception as exc:
             print(f"Mask stage error for id={sample_id}: {exc}")
 
+    print("[MASK] Final flush starting...")
     uploader.flush()
     print(f"Mask stage complete. New samples processed: {new_count}")
 
@@ -672,7 +695,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build mask and latent datasets for KTO inpainting.")
 
     parser.add_argument("--stage", choices=["masks", "latents", "all"], default="all")
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cuda")
     parser.add_argument("--hf-token", default=os.getenv("HF_TOKEN", ""))
 
     # Stage 1: masks
@@ -686,7 +709,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auditor-vocab-url", default=auditor_module.DEFAULT_VOCAB_URL)
 
     parser.add_argument("--resume-masks", action="store_true")
-    parser.add_argument("--mask-shard-size", type=int, default=2500)
+    parser.add_argument("--mask-shard-size", type=int, default=500)
     parser.add_argument("--max-mask-samples", type=int, default=0)
 
     parser.add_argument("--heatmap-percentile", type=float, default=75.0)
