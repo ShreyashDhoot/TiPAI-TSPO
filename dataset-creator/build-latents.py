@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency
+    load_dotenv = None
+
 import cv2
 import numpy as np
 import pyarrow as pa
@@ -33,6 +38,10 @@ from transformers import pipeline as hf_pipeline
 
 # Reuse the auditor inference module with first-run artifact download.
 import auditor_inference as auditor_module
+
+
+if load_dotenv is not None:
+    load_dotenv()
 
 
 def ensure_pil_image(value, mode: str = "RGB") -> Image.Image:
@@ -94,7 +103,7 @@ class MaskShardUploader:
         if not self.rows:
             return
 
-        ds = Dataset.from_list(self.rows, features=self.features, num_proc=1)
+        ds = Dataset.from_list(self.rows, features=self.features)
         buffer = io.BytesIO()
         ds.to_parquet(buffer)
         buffer.seek(0)
@@ -694,7 +703,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auditor-vocab-url", default=auditor_module.DEFAULT_VOCAB_URL)
 
     parser.add_argument("--resume-masks", action="store_true")
-    parser.add_argument("--mask-shard-size", type=int, default=500)
+    parser.add_argument("--mask-shard-size", type=int, default=10)
     parser.add_argument("--max-mask-samples", type=int, default=0)
 
     parser.add_argument("--heatmap-percentile", type=float, default=75.0)
@@ -757,6 +766,15 @@ def main() -> None:
         login(token=args.hf_token)
 
     api = HfApi(token=args.hf_token or None)
+
+    for repo_id in (args.mask_dataset, args.latent_dataset):
+        try:
+            api.repo_info(repo_id, repo_type="dataset")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Hugging Face dataset repo '{repo_id}' is not accessible with the current token. "
+                f"Make sure it exists, is spelled correctly, and that HF_TOKEN has write access."
+            ) from exc
 
     if args.stage in ("masks", "all"):
         run_mask_stage(args, api)
