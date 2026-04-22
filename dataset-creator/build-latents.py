@@ -70,11 +70,6 @@ def dilate_mask(mask_pil: Image.Image, radius: int = 8) -> Image.Image:
     return Image.fromarray((dilated * 255).astype(np.uint8))
 
 
-def random_dilate(mask_pil: Image.Image, low: int = 4, high: int = 15) -> Image.Image:
-    radius = np.random.randint(low, high)
-    return dilate_mask(mask_pil, radius=radius)
-
-
 @dataclass
 class MaskShardUploader:
     api: HfApi
@@ -222,7 +217,7 @@ class FaceParser:
             use_gpu = device == "cuda"
 
         pipe_device = 0 if use_gpu else -1
-        self.pipe = hf_pipeline("image-segmentation", model=model_id, device=pipe_device)
+        self.pipe = hf_pipeline("image-segmentation", model=model_id, device=pipe_device, trust_remote_code=True)
 
     def _is_face_label(self, label: str) -> bool:
         label = label.lower().strip()
@@ -404,9 +399,17 @@ def run_mask_stage(args, api: HfApi) -> None:
     )
 
     face_parser = None
-    if args.enable_face_exclusion:
+    face_exclusion_enabled = args.enable_face_exclusion
+    if face_exclusion_enabled:
         print(f"Loading face parser: {args.face_parsing_model}")
-        face_parser = FaceParser(args.face_parsing_model, device=args.device)
+        try:
+            face_parser = FaceParser(args.face_parsing_model, device=args.device)
+        except Exception as exc:
+            print(
+                "Warning: failed to initialize face parser; continuing with face exclusion disabled. "
+                f"Model='{args.face_parsing_model}' error='{exc}'"
+            )
+            face_exclusion_enabled = False
 
     source_stream = load_dataset(args.source_dataset, split=args.source_split, streaming=True)
     processed_ids = collect_existing_ids(args.mask_dataset) if args.resume_masks else set()
@@ -432,7 +435,7 @@ def run_mask_stage(args, api: HfApi) -> None:
                 auditor_runner=auditor_runner,
                 face_parser=face_parser,
                 nudity_field=args.nudity_field,
-                face_exclusion_enabled=args.enable_face_exclusion,
+                face_exclusion_enabled=face_exclusion_enabled,
                 heatmap_percentile=args.heatmap_percentile,
                 mask_dilate_kernel=args.mask_dilate_kernel,
                 mask_dilate_iters=args.mask_dilate_iters,
@@ -464,16 +467,10 @@ def build_latent_row(
     transform,
     mask_transform,
     mask_latent_transform,
-    random_dilate_enabled: bool,
-    random_dilate_low: int,
-    random_dilate_high: int,
     label_field: str,
 ) -> Dict:
     img = ensure_pil_image(example["image"], mode="RGB")
     mask = ensure_pil_image(example["feathered_mask"], mode="L")
-
-    if random_dilate_enabled:
-        mask = random_dilate(mask, low=random_dilate_low, high=random_dilate_high)
 
     mask_t = mask_transform(mask)
     mask_l = mask_latent_transform(mask)
@@ -511,9 +508,6 @@ def process_latent_stream(
     transform,
     mask_transform,
     mask_latent_transform,
-    random_dilate_enabled: bool,
-    random_dilate_low: int,
-    random_dilate_high: int,
     label_field: str,
     max_samples: int,
     desc: str,
@@ -528,9 +522,6 @@ def process_latent_stream(
                 transform=transform,
                 mask_transform=mask_transform,
                 mask_latent_transform=mask_latent_transform,
-                random_dilate_enabled=random_dilate_enabled,
-                random_dilate_low=random_dilate_low,
-                random_dilate_high=random_dilate_high,
                 label_field=label_field,
             )
             writer.add(row)
@@ -659,9 +650,6 @@ def run_latent_stage(args, api: HfApi) -> None:
                 transform=transform,
                 mask_transform=mask_transform,
                 mask_latent_transform=mask_latent_transform,
-                random_dilate_enabled=args.random_dilate_latents,
-                random_dilate_low=args.random_dilate_low,
-                random_dilate_high=args.random_dilate_high,
                 label_field=args.label_field,
             )
 
@@ -706,7 +694,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mask-shard-size", type=int, default=10)
     parser.add_argument("--max-mask-samples", type=int, default=0)
 
-    parser.add_argument("--heatmap-percentile", type=float, default=75.0)
+    parser.add_argument("--heatmap-percentile", type=float, default=80.0)
     parser.add_argument(
         "--heatmap-resize-interpolation",
         choices=["nearest", "bilinear", "bicubic"],
@@ -751,10 +739,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=512)
     parser.add_argument("--latent-mask-size", type=int, default=64)
     parser.add_argument("--label-field", default="safe")
-
-    parser.add_argument("--random-dilate-latents", action="store_true")
-    parser.add_argument("--random-dilate-low", type=int, default=4)
-    parser.add_argument("--random-dilate-high", type=int, default=15)
 
     return parser.parse_args()
 
