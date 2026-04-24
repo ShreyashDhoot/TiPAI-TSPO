@@ -9,12 +9,12 @@ This script intentionally reuses infer_train_new.py utilities for auditor loadin
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import io
 import os
 import tempfile
 import math
 from dataclasses import dataclass
-from itertools import islice
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 try:
@@ -195,6 +195,31 @@ class AuditorRunner:
             raise RuntimeError("Auditor inference did not return 'adversarial_heatmap'.")
         return np.asarray(heatmap)
 
+    def infer_heatmap_batch(self, images: List[Image.Image], prompts: List[str]) -> List[np.ndarray]:
+        if len(images) != len(prompts):
+            raise ValueError("images and prompts must have the same length.")
+        if not images:
+            return []
+        if len(images) == 1:
+            return [self.infer_heatmap(images[0], prompts[0])]
+
+        img_tensors = [self.auditor.transform(img.convert("RGB")) for img in images]
+        token_tensors = [self.auditor.tokenizer.encode(prompt) for prompt in prompts]
+
+        img_batch = torch.stack(img_tensors, dim=0).to(auditor_module.DEVICE)
+        token_batch = torch.stack(token_tensors, dim=0).to(auditor_module.DEVICE)
+        timestep_batch = torch.zeros((img_batch.shape[0], 1), device=auditor_module.DEVICE)
+
+        with torch.inference_mode():
+            outputs = self.auditor.model(img_batch, text_tokens=token_batch, timestep=timestep_batch)
+
+        maps = outputs.get("adversarial_map")
+        if maps is None:
+            raise RuntimeError("Auditor inference did not return 'adversarial_map'.")
+
+        maps = maps[:, 0].detach().float().cpu().numpy()
+        return [maps[i] for i in range(maps.shape[0])]
+
 
 class FaceParser:
     FACE_LABEL_KEYWORDS = {
@@ -318,11 +343,13 @@ def process_mask_example(
     feather_sigma: float,
     removal_threshold: int,
     heatmap_resize_interpolation: str,
+    preloaded_image: Optional[Image.Image] = None,
+    precomputed_heatmap: Optional[np.ndarray] = None,
 ) -> Dict:
-    pil_img = ensure_pil_image(example["image"], mode="RGB")
+    pil_img = preloaded_image if preloaded_image is not None else ensure_pil_image(example["image"], mode="RGB")
     prompt = str(example.get("prompt", ""))
 
-    heatmap = auditor_runner.infer_heatmap(pil_img, prompt)
+    heatmap = precomputed_heatmap if precomputed_heatmap is not None else auditor_runner.infer_heatmap(pil_img, prompt)
     heatmap = resize_heatmap_to_image(
         heatmap=heatmap,
         target_hw=(pil_img.height, pil_img.width),
@@ -414,6 +441,29 @@ def run_mask_stage(args, api: HfApi) -> None:
     source_stream = load_dataset(args.source_dataset, split=args.source_split, streaming=True)
     processed_ids = collect_existing_ids(args.mask_dataset) if args.resume_masks else set()
 
+    if args.mask_batch_size < 1:
+        raise ValueError("--mask-batch-size must be >= 1.")
+
+    if args.mask_cpu_workers < 0:
+        raise ValueError("--mask-cpu-workers must be >= 0.")
+
+    if args.mask_progress_log_every < 1:
+        raise ValueError("--mask-progress-log-every must be >= 1.")
+
+    batch_size = args.mask_batch_size
+    if args.device == "cpu":
+        batch_size = 1
+    elif args.device == "auto" and not torch.cuda.is_available():
+        batch_size = 1
+
+    auto_workers = max(1, min(16, (os.cpu_count() or 1)))
+    cpu_workers = args.mask_cpu_workers if args.mask_cpu_workers > 0 else auto_workers
+
+    if torch.cuda.is_available() and args.device in ("auto", "cuda"):
+        torch.backends.cudnn.benchmark = True
+
+    print(f"[MASK] Runtime config: batch_size={batch_size}, cpu_workers={cpu_workers}")
+
     uploader = MaskShardUploader(
         api=api,
         repo_id=args.mask_dataset,
@@ -421,17 +471,25 @@ def run_mask_stage(args, api: HfApi) -> None:
         features=features,
     )
 
-    new_count = 0
-    pbar = tqdm(source_stream, desc="Mask stage", dynamic_ncols=True, unit="sample")
-    for example in pbar:
-        sample_id = str(example.get("id", ""))
-        pbar.set_postfix_str(f"id={sample_id} processed={new_count}")
-        if args.resume_masks and sample_id in processed_ids:
-            continue
+    def process_batch(filtered_examples: List[Dict], executor: Optional[ThreadPoolExecutor]) -> int:
+        if not filtered_examples:
+            return 0
 
-        try:
-            row = process_mask_example(
-                example=example,
+        prepared: List[Tuple[Dict, Image.Image, str]] = []
+        for sample in filtered_examples:
+            pil_img = ensure_pil_image(sample["image"], mode="RGB")
+            prompt = str(sample.get("prompt", ""))
+            prepared.append((sample, pil_img, prompt))
+
+        heatmaps = auditor_runner.infer_heatmap_batch(
+            images=[x[1] for x in prepared],
+            prompts=[x[2] for x in prepared],
+        )
+
+        def build_row(item: Tuple[Dict, Image.Image, str], heatmap: np.ndarray) -> Dict:
+            sample, pil_img, _ = item
+            return process_mask_example(
+                example=sample,
                 auditor_runner=auditor_runner,
                 face_parser=face_parser,
                 nudity_field=args.nudity_field,
@@ -445,15 +503,96 @@ def run_mask_stage(args, api: HfApi) -> None:
                 feather_sigma=args.feather_sigma,
                 removal_threshold=args.removal_threshold,
                 heatmap_resize_interpolation=args.heatmap_resize_interpolation,
+                preloaded_image=pil_img,
+                precomputed_heatmap=heatmap,
             )
+
+        created = 0
+        if executor is None:
+            for item, heatmap in zip(prepared, heatmaps):
+                row = build_row(item, heatmap)
+                uploader.add(row)
+                created += 1
+            return created
+
+        futures = [executor.submit(build_row, item, heatmap) for item, heatmap in zip(prepared, heatmaps)]
+        for fut in futures:
+            row = fut.result()
             uploader.add(row)
-            new_count += 1
-            pbar.set_postfix_str(f"id={sample_id} processed={new_count} queued={len(uploader.rows)}")
+            created += 1
+        return created
+
+    new_count = 0
+    last_logged = 0
+    pbar = tqdm(
+        total=(args.max_mask_samples if args.max_mask_samples > 0 else None),
+        desc="Mask stage",
+        dynamic_ncols=True,
+        unit="sample",
+        mininterval=0.5,
+    )
+    pending: List[Dict] = []
+    source_iter = iter(source_stream)
+
+    executor: Optional[ThreadPoolExecutor] = None
+    try:
+        if cpu_workers > 1:
+            executor = ThreadPoolExecutor(max_workers=cpu_workers)
+
+        for example in source_iter:
+            sample_id = str(example.get("id", ""))
+            if args.resume_masks and sample_id in processed_ids:
+                continue
+
+            pending.append(example)
+            if len(pending) < batch_size:
+                continue
+
+            if args.max_mask_samples:
+                remaining = args.max_mask_samples - new_count
+                if remaining <= 0:
+                    break
+                pending = pending[:remaining]
+
+            try:
+                created = process_batch(pending, executor)
+                new_count += created
+                pbar.update(created)
+                pbar.set_postfix_str(f"processed={new_count} queued={len(uploader.rows)}")
+                if (new_count - last_logged) >= args.mask_progress_log_every:
+                    tqdm.write(f"[MASK] processed={new_count} queued={len(uploader.rows)}")
+                    last_logged = new_count
+            except Exception as exc:
+                print(f"Mask stage batch error near id={sample_id}: {exc}")
+            finally:
+                pending = []
 
             if args.max_mask_samples and new_count >= args.max_mask_samples:
                 break
-        except Exception as exc:
-            print(f"Mask stage error for id={sample_id}: {exc}")
+
+        if pending and (not args.max_mask_samples or new_count < args.max_mask_samples):
+            if args.max_mask_samples:
+                remaining = args.max_mask_samples - new_count
+                pending = pending[:remaining]
+            try:
+                created = process_batch(pending, executor)
+                new_count += created
+                pbar.update(created)
+                pbar.set_postfix_str(f"processed={new_count} queued={len(uploader.rows)}")
+                if (new_count - last_logged) >= args.mask_progress_log_every:
+                    tqdm.write(f"[MASK] processed={new_count} queued={len(uploader.rows)}")
+                    last_logged = new_count
+            except Exception as exc:
+                sample_id = str(pending[-1].get("id", "")) if pending else ""
+                print(f"Mask stage final batch error near id={sample_id}: {exc}")
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+    pbar.close()
+
+    if new_count != last_logged:
+        print(f"[MASK] processed={new_count} queued={len(uploader.rows)}")
 
     print("[MASK] Final flush starting...")
     uploader.flush()
@@ -691,8 +830,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auditor-vocab-url", default=auditor_module.DEFAULT_VOCAB_URL)
 
     parser.add_argument("--resume-masks", action="store_true")
-    parser.add_argument("--mask-shard-size", type=int, default=10)
+    parser.add_argument("--mask-shard-size", type=int, default=5000)
     parser.add_argument("--max-mask-samples", type=int, default=0)
+    parser.add_argument(
+        "--mask-progress-log-every",
+        type=int,
+        default=100,
+        help="Emit a plain-text mask progress line every N processed samples.",
+    )
+    parser.add_argument(
+        "--mask-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for auditor GPU inference during mask creation. Forced to 1 on CPU-only runs.",
+    )
+    parser.add_argument(
+        "--mask-cpu-workers",
+        type=int,
+        default=32,
+        help="CPU worker threads for per-sample mask postprocessing. 0 selects an automatic value.",
+    )
 
     parser.add_argument("--heatmap-percentile", type=float, default=80.0)
     parser.add_argument(
