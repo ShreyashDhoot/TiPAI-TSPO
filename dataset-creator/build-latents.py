@@ -648,9 +648,9 @@ def build_latent_rows_batch(
     mask_latent_transform,
     label_field: str,
     device: torch.device,
+    executor: Optional[ThreadPoolExecutor] = None,
 ) -> List[Tuple[Dict, bool, str]]:
-    prepared = []
-    for example, send_to_val, cat in batch_items:
+    def prepare_item(example: Dict, send_to_val: bool, cat: str) -> Optional[Dict]:
         sample_id = str(example.get("id", ""))
         try:
             img = ensure_pil_image(example["image"], mode="RGB")
@@ -662,21 +662,33 @@ def build_latent_rows_batch(
             img_ctx_t = img_t * (1 - mask_t)
             prompt = str(example.get("prompt", ""))
             label_value = float(1 if int(example.get(label_field, 0)) == 1 else 0)
-
-            prepared.append(
-                {
-                    "sample_id": sample_id,
-                    "cat": cat,
-                    "send_to_val": send_to_val,
-                    "img_t": img_t,
-                    "img_ctx_t": img_ctx_t,
-                    "mask_l": mask_l,
-                    "prompt": prompt,
-                    "label": label_value,
-                }
-            )
         except Exception as exc:
             print(f"Latent prep error for id={sample_id}: {exc}")
+            return None
+
+        return {
+            "sample_id": sample_id,
+            "cat": cat,
+            "send_to_val": send_to_val,
+            "img_t": img_t,
+            "img_ctx_t": img_ctx_t,
+            "mask_l": mask_l,
+            "prompt": prompt,
+            "label": label_value,
+        }
+
+    prepared: List[Dict] = []
+    if executor is None:
+        for example, send_to_val, cat in batch_items:
+            item = prepare_item(example, send_to_val, cat)
+            if item is not None:
+                prepared.append(item)
+    else:
+        futures = [executor.submit(prepare_item, example, send_to_val, cat) for example, send_to_val, cat in batch_items]
+        for fut in futures:
+            item = fut.result()
+            if item is not None:
+                prepared.append(item)
 
     if not prepared:
         return []
@@ -767,7 +779,12 @@ def run_latent_stage(args, api: HfApi) -> None:
     if args.latent_progress_log_every < 1:
         raise ValueError("--latent-progress-log-every must be >= 1.")
 
+    if args.latent_cpu_workers < 0:
+        raise ValueError("--latent-cpu-workers must be >= 0.")
+
     device = torch.device("cuda")
+    auto_workers = max(1, min(16, (os.cpu_count() or 1)))
+    cpu_workers = args.latent_cpu_workers if args.latent_cpu_workers > 0 else auto_workers
 
     print(f"Loading inpainting base model: {args.base_model}")
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
@@ -778,6 +795,8 @@ def run_latent_stage(args, api: HfApi) -> None:
 
     vae = pipe.vae.eval()
     tokenizer = pipe.tokenizer
+
+    print(f"[LATENT] Runtime config: batch_size={args.latent_batch_size}, cpu_workers={cpu_workers}")
 
     torch.backends.cudnn.benchmark = True
 
@@ -807,26 +826,36 @@ def run_latent_stage(args, api: HfApi) -> None:
     if not category_fields:
         raise ValueError("--val-category-fields must contain at least one field name.")
 
-    # Pass 1: count category totals so each category gets its own 2% validation quota.
-    category_totals: Dict[str, int] = {field: 0 for field in category_fields}
-    counting_stream = load_dataset(args.mask_dataset, split=args.mask_split_for_latents, streaming=True)
-    total_samples = 0
-    for example in tqdm(counting_stream, desc="Count categories"):
-        cat = get_primary_category(example, category_fields, args.label_field)
-        category_totals[cat] = category_totals.get(cat, 0) + 1
-        total_samples += 1
-
     val_targets: Dict[str, int] = {}
-    for cat, total in category_totals.items():
-        target = int(math.floor(total * args.val_ratio))
-        if args.ensure_min_val_per_category and total > 0 and target == 0:
-            target = 1
-        val_targets[cat] = target
+    category_totals: Dict[str, int] = {field: 0 for field in category_fields}
 
-    print(f"Total samples in split '{args.mask_split_for_latents}': {total_samples}")
-    print("Validation targets by category:")
-    for cat in sorted(val_targets.keys()):
-        print(f"  {cat}: {val_targets[cat]} / {category_totals.get(cat, 0)}")
+    if args.val_target_mode == "ratio":
+        # Ratio mode needs a first pass to estimate per-category targets.
+        counting_stream = load_dataset(args.mask_dataset, split=args.mask_split_for_latents, streaming=True)
+        total_samples = 0
+        for example in tqdm(counting_stream, desc="Count categories"):
+            cat = get_primary_category(example, category_fields, args.label_field)
+            category_totals[cat] = category_totals.get(cat, 0) + 1
+            total_samples += 1
+
+        for cat, total in category_totals.items():
+            target = int(math.floor(total * args.val_ratio))
+            if args.ensure_min_val_per_category and total > 0 and target == 0:
+                target = 1
+            val_targets[cat] = target
+
+        print(f"Total samples in split '{args.mask_split_for_latents}': {total_samples}")
+        print("Validation targets by category:")
+        for cat in sorted(val_targets.keys()):
+            print(f"  {cat}: {val_targets[cat]} / {category_totals.get(cat, 0)}")
+    else:
+        # Fixed mode avoids the counting pass entirely.
+        fixed_target = max(0, int(args.val_count))
+        val_targets = {cat: fixed_target for cat in category_fields}
+        print("Validation target mode: fixed (counting pass skipped)")
+        print("Validation targets by category:")
+        for cat in sorted(val_targets.keys()):
+            print(f"  {cat}: {val_targets[cat]}")
 
     # Pass 2: route samples to val/train using per-category quotas.
     routing_stream = load_dataset(args.mask_dataset, split=args.mask_split_for_latents, streaming=True)
@@ -856,6 +885,7 @@ def run_latent_stage(args, api: HfApi) -> None:
 
     pending_items: List[Tuple[Dict, bool, str]] = []
     pending_val_by_cat: Dict[str, int] = {}
+    executor: Optional[ThreadPoolExecutor] = None
 
     def flush_latent_batch() -> Tuple[int, int, Dict[str, int]]:
         if not pending_items:
@@ -870,6 +900,7 @@ def run_latent_stage(args, api: HfApi) -> None:
             mask_latent_transform=mask_latent_transform,
             label_field=args.label_field,
             device=device,
+            executor=executor,
         )
 
         batch_train = 0
@@ -887,63 +918,70 @@ def run_latent_stage(args, api: HfApi) -> None:
 
         return batch_train, batch_val, val_increments
 
-    for example in routing_stream:
-        cat = get_primary_category(example, category_fields, args.label_field)
-        planned_val = val_selected.get(cat, 0) + pending_val_by_cat.get(cat, 0)
-        send_to_val = planned_val < val_targets.get(cat, 0)
+    try:
+        if cpu_workers > 1:
+            executor = ThreadPoolExecutor(max_workers=cpu_workers)
 
-        if send_to_val and args.max_val_samples and (val_count + sum(pending_val_by_cat.values())) >= args.max_val_samples:
-            send_to_val = False
+        for example in routing_stream:
+            cat = get_primary_category(example, category_fields, args.label_field)
+            planned_val = val_selected.get(cat, 0) + pending_val_by_cat.get(cat, 0)
+            send_to_val = planned_val < val_targets.get(cat, 0)
 
-        projected_train = train_count + (len(pending_items) - sum(pending_val_by_cat.values()))
-        if (not send_to_val) and args.max_train_samples and projected_train >= args.max_train_samples:
-            continue
+            if send_to_val and args.max_val_samples and (val_count + sum(pending_val_by_cat.values())) >= args.max_val_samples:
+                send_to_val = False
 
-        if args.max_val_samples and args.max_train_samples:
-            if val_count >= args.max_val_samples and train_count >= args.max_train_samples:
-                break
+            projected_train = train_count + (len(pending_items) - sum(pending_val_by_cat.values()))
+            if (not send_to_val) and args.max_train_samples and projected_train >= args.max_train_samples:
+                continue
 
-        pending_items.append((example, send_to_val, cat))
-        if send_to_val:
-            pending_val_by_cat[cat] = pending_val_by_cat.get(cat, 0) + 1
+            if args.max_val_samples and args.max_train_samples:
+                if val_count >= args.max_val_samples and train_count >= args.max_train_samples:
+                    break
 
-        if len(pending_items) < args.latent_batch_size:
-            continue
+            pending_items.append((example, send_to_val, cat))
+            if send_to_val:
+                pending_val_by_cat[cat] = pending_val_by_cat.get(cat, 0) + 1
 
-        try:
-            batch_train, batch_val, val_increments = flush_latent_batch()
-            train_count += batch_train
-            val_count += batch_val
-            for c, inc in val_increments.items():
-                val_selected[c] = val_selected.get(c, 0) + inc
+            if len(pending_items) < args.latent_batch_size:
+                continue
 
-            processed_now = batch_train + batch_val
-            pbar.update(processed_now)
-            pbar.set_postfix_str(f"train={train_count} val={val_count} queued={len(train_writer.rows)+len(val_writer.rows)}")
-            if (train_count + val_count - last_logged) >= args.latent_progress_log_every:
-                tqdm.write(f"[LATENT] train={train_count} val={val_count}")
-                last_logged = train_count + val_count
-        except Exception as exc:
-            sample_id = str(pending_items[-1][0].get("id", "")) if pending_items else ""
-            print(f"Latent stage batch error near id={sample_id}: {exc}")
-        finally:
-            pending_items = []
-            pending_val_by_cat = {}
+            try:
+                batch_train, batch_val, val_increments = flush_latent_batch()
+                train_count += batch_train
+                val_count += batch_val
+                for c, inc in val_increments.items():
+                    val_selected[c] = val_selected.get(c, 0) + inc
 
-    if pending_items:
-        try:
-            batch_train, batch_val, val_increments = flush_latent_batch()
-            train_count += batch_train
-            val_count += batch_val
-            for c, inc in val_increments.items():
-                val_selected[c] = val_selected.get(c, 0) + inc
+                processed_now = batch_train + batch_val
+                pbar.update(processed_now)
+                pbar.set_postfix_str(f"train={train_count} val={val_count} queued={len(train_writer.rows)+len(val_writer.rows)}")
+                if (train_count + val_count - last_logged) >= args.latent_progress_log_every:
+                    tqdm.write(f"[LATENT] train={train_count} val={val_count}")
+                    last_logged = train_count + val_count
+            except Exception as exc:
+                sample_id = str(pending_items[-1][0].get("id", "")) if pending_items else ""
+                print(f"Latent stage batch error near id={sample_id}: {exc}")
+            finally:
+                pending_items = []
+                pending_val_by_cat = {}
 
-            processed_now = batch_train + batch_val
-            pbar.update(processed_now)
-            pbar.set_postfix_str(f"train={train_count} val={val_count} queued={len(train_writer.rows)+len(val_writer.rows)}")
-        except Exception as exc:
-            sample_id = str(pending_items[-1][0].get("id", "")) if pending_items else ""
-            print(f"Latent stage final batch error near id={sample_id}: {exc}")
+        if pending_items:
+            try:
+                batch_train, batch_val, val_increments = flush_latent_batch()
+                train_count += batch_train
+                val_count += batch_val
+                for c, inc in val_increments.items():
+                    val_selected[c] = val_selected.get(c, 0) + inc
+
+                processed_now = batch_train + batch_val
+                pbar.update(processed_now)
+                pbar.set_postfix_str(f"train={train_count} val={val_count} queued={len(train_writer.rows)+len(val_writer.rows)}")
+            except Exception as exc:
+                sample_id = str(pending_items[-1][0].get("id", "")) if pending_items else ""
+                print(f"Latent stage final batch error near id={sample_id}: {exc}")
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     pbar.close()
 
@@ -985,13 +1023,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mask-batch-size",
         type=int,
-        default=32,
+        default=64,
         help="Batch size for auditor GPU inference during mask creation. Forced to 1 on CPU-only runs.",
     )
     parser.add_argument(
         "--mask-cpu-workers",
         type=int,
-        default=32,
+        default=64,
         help="CPU worker threads for per-sample mask postprocessing. 0 selects an automatic value.",
     )
 
@@ -1019,6 +1057,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mask-split-for-latents", default="train")
     parser.add_argument("--base-model", default="runwayml/stable-diffusion-inpainting")
 
+    parser.add_argument(
+        "--val-target-mode",
+        choices=["fixed", "ratio"],
+        default="fixed",
+        help="How to choose per-category validation targets. 'fixed' skips counting and uses --val-count per category.",
+    )
     parser.add_argument("--val-ratio", type=float, default=0.02)
     parser.add_argument(
         "--val-category-fields",
@@ -1032,7 +1076,12 @@ def parse_args() -> argparse.Namespace:
         help="Ensure at least 1 validation sample for non-empty categories.",
     )
 
-    parser.add_argument("--val-count", type=int, default=500)
+    parser.add_argument(
+        "--val-count",
+        type=int,
+        default=10,
+        help="Validation samples per category when --val-target-mode fixed.",
+    )
     parser.add_argument("--latent-shard-size", type=int, default=20000)
     parser.add_argument(
         "--latent-batch-size",
@@ -1041,13 +1090,19 @@ def parse_args() -> argparse.Namespace:
         help="Batch size for latent-stage VAE encoding.",
     )
     parser.add_argument(
+        "--latent-cpu-workers",
+        type=int,
+        default=16,
+        help="CPU worker threads for latent-stage sample preparation. 0 selects an automatic value.",
+    )
+    parser.add_argument(
         "--latent-progress-log-every",
         type=int,
         default=1000,
         help="Emit a plain-text latent progress line every N processed samples.",
     )
     parser.add_argument("--max-train-samples", type=int, default=0)
-    parser.add_argument("--max-val-samples", type=int, default=10)
+    parser.add_argument("--max-val-samples", type=int, default=0)
 
     parser.add_argument("--image-size", type=int, default=512)
     parser.add_argument("--latent-mask-size", type=int, default=64)
