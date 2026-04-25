@@ -123,6 +123,7 @@ class LatentShardUploader:
     repo_id: str
     split: str
     shard_size: int
+    row_group_size: int
 
     def __post_init__(self):
         self.rows: List[Dict] = []
@@ -149,7 +150,12 @@ class LatentShardUploader:
             tmp_path = tmp.name
 
         try:
-            pq.write_table(table, tmp_path, compression="zstd")
+            pq.write_table(
+                table,
+                tmp_path,
+                compression="zstd",
+                row_group_size=self.row_group_size,
+            )
             path_in_repo = f"{self.split}/shard-{self.shard_idx:05d}.parquet"
             self.api.upload_file(
                 path_or_fileobj=tmp_path,
@@ -866,12 +872,14 @@ def run_latent_stage(args, api: HfApi) -> None:
         repo_id=args.latent_dataset,
         split="val",
         shard_size=args.latent_shard_size,
+        row_group_size=args.latent_row_group_size,
     )
     train_writer = LatentShardUploader(
         api=api,
         repo_id=args.latent_dataset,
         split="train",
         shard_size=args.latent_shard_size,
+        row_group_size=args.latent_row_group_size,
     )
 
     val_count = 0
@@ -1082,7 +1090,18 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Validation samples per category when --val-target-mode fixed.",
     )
-    parser.add_argument("--latent-shard-size", type=int, default=20000)
+    parser.add_argument(
+        "--latent-shard-size",
+        type=int,
+        default=4000,
+        help="Rows per parquet shard. Lower values reduce shard file size and worker memory spikes.",
+    )
+    parser.add_argument(
+        "--latent-row-group-size",
+        type=int,
+        default=256,
+        help="Rows per parquet row-group written inside each shard.",
+    )
     parser.add_argument(
         "--latent-batch-size",
         type=int,

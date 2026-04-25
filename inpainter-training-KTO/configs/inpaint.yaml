@@ -1,6 +1,6 @@
 model:
   base_model: runwayml/stable-diffusion-inpainting
-  hf_dataset_repo: ShreyashDhoot/dataset_latents_VAE
+  hf_dataset_repo: ShreyashDhoot/KTO-latents
   use_lora: true
   lora:
     r: 64
@@ -22,7 +22,11 @@ training:
   batch_size: 10
   grad_accum_steps: 1
   beta: 50.0
-  num_workers: 5
+  num_workers: 2
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  multiprocessing_context: spawn
   log_every: 10
   save_every: 50
   grad_clip_norm: 1.0

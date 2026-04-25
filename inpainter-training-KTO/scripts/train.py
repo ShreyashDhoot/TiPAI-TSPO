@@ -19,6 +19,37 @@ from engine.checkpoint import save_checkpoint
 from engine.evaluate import visual_eval
 from engine.train_one_epoch import train_loop
 
+
+def build_train_loader(train_ds, cfg):
+    workers = int(cfg["training"].get("num_workers", 0))
+    pin_memory = bool(cfg["training"].get("pin_memory", True))
+    persistent_workers = bool(cfg["training"].get("persistent_workers", False)) and workers > 0
+
+    loader_kwargs = {
+        "dataset": train_ds,
+        "batch_size": cfg["training"]["batch_size"],
+        "shuffle": True,
+        "num_workers": workers,
+        "pin_memory": pin_memory,
+        "persistent_workers": persistent_workers,
+        "collate_fn": latent_collate,
+    }
+
+    if workers > 0:
+        loader_kwargs["prefetch_factor"] = int(cfg["training"].get("prefetch_factor", 2))
+        loader_kwargs["multiprocessing_context"] = cfg["training"].get("multiprocessing_context", "spawn")
+
+    print(
+        "DataLoader config: "
+        f"workers={workers}, pin_memory={pin_memory}, "
+        f"persistent_workers={persistent_workers}, "
+        f"prefetch_factor={loader_kwargs.get('prefetch_factor', None)}, "
+        f"mp_context={loader_kwargs.get('multiprocessing_context', None)}"
+    )
+
+    return DataLoader(**loader_kwargs)
+
+
 def main():
     with open("configs/inpaint.yaml", "r") as f: #opens the yaml config file 
         cfg = yaml.safe_load(f) # loads cfg with configurations from yaml 
@@ -57,16 +88,7 @@ def main():
         cache_dir=cfg["data"]["cache_dir"],
     )
 
-    train_loader = DataLoader(
-        train_ds, 
-        batch_size=cfg["training"]["batch_size"],
-        shuffle=True,
-        num_workers=cfg["training"]["num_workers"],
-        pin_memory=True,
-        persistent_workers=cfg["training"]["num_workers"] > 0,
-        prefetch_factor=4 if cfg["training"]["num_workers"] > 0 else None,
-        collate_fn=latent_collate,
-    )
+    train_loader = build_train_loader(train_ds, cfg)
 
     val_vis_samples = [val_ds[i] for i in range(min(4, len(val_ds)))]
 
@@ -147,24 +169,38 @@ def main():
             eval_cfg=cfg.get("output", {}),
         )
 
-    train_loop(
-        unet=unet,
-        ref_unet=ref_unet,
-        vae=vae,
-        text_enc=text_enc,
-        scheduler=scheduler,
-        optimizer=optimizer,
-        lr_sched=lr_sched,
-        scaler=scaler,
-        train_loader=train_loader,
-        pipe=pipe,
-        val_vis_samples=val_vis_samples,
-        wandb_log_fn=wandb_log_fn,
-        save_fn=save_fn,
-        visual_eval_fn=visual_eval_fn,
-        cfg=cfg,
-        device=device,
-    )
+    train_loop_kwargs = {
+        "unet": unet,
+        "ref_unet": ref_unet,
+        "vae": vae,
+        "text_enc": text_enc,
+        "scheduler": scheduler,
+        "optimizer": optimizer,
+        "lr_sched": lr_sched,
+        "scaler": scaler,
+        "train_loader": train_loader,
+        "pipe": pipe,
+        "val_vis_samples": val_vis_samples,
+        "wandb_log_fn": wandb_log_fn,
+        "save_fn": save_fn,
+        "visual_eval_fn": visual_eval_fn,
+        "cfg": cfg,
+        "device": device,
+    }
+
+    try:
+        train_loop(**train_loop_kwargs)
+    except RuntimeError as exc:
+        msg = str(exc)
+        is_worker_crash = ("DataLoader worker" in msg) and ("exited unexpectedly" in msg)
+        had_workers = int(cfg["training"].get("num_workers", 0)) > 0
+        if not (is_worker_crash and had_workers):
+            raise
+
+        print("DataLoader worker crashed. Retrying with num_workers=0.")
+        cfg["training"]["num_workers"] = 0
+        train_loop_kwargs["train_loader"] = build_train_loader(train_ds, cfg)
+        train_loop(**train_loop_kwargs)
 
     finish_wandb()
 

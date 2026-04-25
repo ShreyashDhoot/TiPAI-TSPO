@@ -54,18 +54,14 @@ class LatentInpaintDataset(torch.utils.data.Dataset):
 
         self.cum_rows = [0]
         self.row_counts = []
-        self.parquet_files = []
         self.row_group_cums = {}
-        self.file_to_idx = {}
-        self._row_group_cache = {}
+        self._pf_cache = {}
 
         for f in self.files:
             pf = pq.ParquetFile(f)
             n = pf.metadata.num_rows
             self.row_counts.append(n)
             self.cum_rows.append(self.cum_rows[-1] + n)
-            self.file_to_idx[f] = len(self.parquet_files)
-            self.parquet_files.append(pf)
 
             rg_cum = [0]
             for rg_idx in range(pf.num_row_groups):
@@ -108,19 +104,19 @@ class LatentInpaintDataset(torch.utils.data.Dataset):
             dict: Dictionary with keys 'z0', 'masked_latent', 'mask_latent',
                  'input_ids', 'label' containing raw data from the Parquet file.
         """
-        file_idx = self.file_to_idx[f]
-        pf = self.parquet_files[file_idx]
+        pf = self._pf_cache.get(f)
+        if pf is None:
+            pf = pq.ParquetFile(f)
+            self._pf_cache[f] = pf
         rg_cum = self.row_group_cums[f]
 
         rg_idx = bisect.bisect_right(rg_cum, local_idx) - 1
         rg_local_idx = local_idx - rg_cum[rg_idx]
 
-        cache_key = (f, rg_idx)
-        table = self._row_group_cache.get(cache_key)
-        if table is None:
-            table = pf.read_row_group(rg_idx)
-            self._row_group_cache.clear()
-            self._row_group_cache[cache_key] = table
+        table = pf.read_row_group(
+            rg_idx,
+            columns=["z0", "masked_latent", "mask_latent", "input_ids", "label"],
+        )
 
         row = table.slice(rg_local_idx, 1).to_pylist()[0]
         return row
