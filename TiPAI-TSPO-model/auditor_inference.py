@@ -108,7 +108,8 @@ class SimpleTextEncoder(nn.Module):
         hidden = torch.cat([hidden[0], hidden[1]], dim=1)
         text_features = self.fc(hidden)
         seq_features = self.norm(self.fc(out))
-        return text_features, seq_features
+        padding_mask = text_tokens.eq(0)
+        return text_features, seq_features, padding_mask
 
 class CompleteMultiTaskAuditor(nn.Module):
     """
@@ -125,6 +126,12 @@ class CompleteMultiTaskAuditor(nn.Module):
         # Detection Heads
         self.adv_head    = nn.Conv2d(2048, 1, kernel_size=1)
         self.class_head  = nn.Conv2d(2048, num_classes, kernel_size=1)
+        self.quality_head = nn.Conv2d(2048, 1, kernel_size=1)
+        self.object_detection_head = nn.Sequential(
+            nn.Conv2d(2048, 512, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(512, num_classes, kernel_size=1)
+        )
         self.image_proj  = nn.Conv2d(2048, 512, kernel_size=1)
         
         # Cross-Attention
@@ -134,13 +141,37 @@ class CompleteMultiTaskAuditor(nn.Module):
         # Projection for CLIP-style faithfulness
         self.img_proj_head = nn.Sequential(nn.Linear(512, 256), nn.ReLU(), nn.Linear(256, 256))
         self.txt_proj_head = nn.Sequential(nn.Linear(512, 256), nn.ReLU(), nn.Linear(256, 256))
+        self.log_temperature = nn.Parameter(torch.tensor([-2.659]))
         
         # Stability and Artifact heads
-        self.timestep_embed = nn.Sequential(nn.Linear(1, 128), nn.SiLU(), nn.Linear(128, 512))
+        self.timestep_embed = nn.Sequential(
+            nn.Linear(1, 128),
+            nn.SiLU(),
+            nn.Linear(128, 256),
+            nn.SiLU(),
+            nn.Linear(256, 512),
+        )
         self.film_adv  = nn.Linear(512, 2048 * 2)
-        self.relative_adv_head = nn.Sequential(nn.Linear(2048, 512), nn.ReLU(), nn.Linear(512, 1))
-        self.seam_feat = nn.Sequential(nn.Conv2d(2048, 512, kernel_size=3, padding=1), nn.ReLU(), nn.BatchNorm2d(512))
-        self.seam_cls = nn.Sequential(nn.Conv2d(512, 1, kernel_size=1))
+        self.film_seam = nn.Linear(512, 512 * 2)
+        self.relative_adv_head = nn.Sequential(
+            nn.Linear(2048, 512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),
+        )
+        self.seam_feat = nn.Sequential(
+            nn.Conv2d(2048, 512, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(512),
+        )
+        self.seam_cls = nn.Sequential(
+            nn.Conv2d(512, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(256),
+            nn.Conv2d(256, 1, kernel_size=1),
+        )
 
     def forward(self, x, text_tokens=None, timestep=None):
         B = x.size(0)
@@ -150,12 +181,20 @@ class CompleteMultiTaskAuditor(nn.Module):
         # 1. Direct Visual Classifiers
         adv_map = self.adv_head(feats)
         class_map = self.class_head(feats)
+        quality_map = self.quality_head(feats)
+        object_heatmaps = self.object_detection_head(feats)
+        quality_logits = F.adaptive_avg_pool2d(quality_map, (1, 1)).flatten(1)
         
         # 2. Text-Conditioned Path
         if text_tokens is not None:
-            text_feat, seq_feat = self.text_encoder(text_tokens)
+            text_feat, seq_feat, padding_mask = self.text_encoder(text_tokens)
             img_seq = self.image_proj(feats).view(B, 512, -1).permute(0, 2, 1)
-            att_seq, _ = self.cross_attention(self.query_norm(img_seq), self.key_norm(seq_feat), self.key_norm(seq_feat))
+            att_seq, _ = self.cross_attention(
+                self.query_norm(img_seq),
+                self.key_norm(seq_feat),
+                self.key_norm(seq_feat),
+                key_padding_mask=padding_mask,
+            )
             img_embed = F.normalize(self.img_proj_head(att_seq.mean(dim=1)), dim=-1)
             txt_embed = F.normalize(self.txt_proj_head(text_feat), dim=-1)
         else:
@@ -167,16 +206,23 @@ class CompleteMultiTaskAuditor(nn.Module):
             gamma, beta = self.film_adv(ts_feat).chunk(2, dim=-1)
             global_mod = (1.0 + gamma) * global_feats + beta
             rel_score = torch.sigmoid(self.relative_adv_head(global_mod))
+
+            seam_mid = self.seam_feat(feats)
+            gamma_seam, beta_seam = self.film_seam(ts_feat).chunk(2, dim=-1)
+            seam_mid = (1.0 + gamma_seam[:, :, None, None]) * seam_mid + beta_seam[:, :, None, None]
         else:
             rel_score = torch.sigmoid(self.relative_adv_head(global_feats))
+            seam_mid = self.seam_feat(feats)
             
-        seam_map = torch.sigmoid(self.seam_cls(self.seam_feat(feats)))
+        seam_map = torch.sigmoid(self.seam_cls(seam_mid))
         seam_score = F.adaptive_avg_pool2d(seam_map, (1, 1)).flatten(1)
 
         return {
             'binary_logits': F.adaptive_avg_pool2d(adv_map, (1, 1)).flatten(1),
             'class_logits':  F.adaptive_avg_pool2d(class_map, (1, 1)).flatten(1),
+            'quality_logits': quality_logits,
             'adversarial_map': torch.sigmoid(adv_map),
+            'object_heatmaps': object_heatmaps,
             'img_embed': img_embed,
             'txt_embed': txt_embed,
             'seam_quality_score': seam_score,
@@ -203,7 +249,10 @@ class AdversarialAuditor:
         vocab_size = len(self.tokenizer.word_to_idx)
         
         self.model = CompleteMultiTaskAuditor(num_classes=NUM_CLASSES, vocab_size=vocab_size)
-        self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        state = torch.load(model_path, map_location=DEVICE)
+        if isinstance(state, dict):
+            state = state.get("state_dict", state.get("model_state_dict", state))
+        self.model.load_state_dict(state)
         self.model.to(DEVICE).eval()
         
         self.transform = transforms.Compose([

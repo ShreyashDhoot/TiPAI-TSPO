@@ -2,15 +2,26 @@
 *.pth
 *.pt
 *.safetensors
+*.bin
+*.onnx
+*.h5
+*.ckpt
 model-weights/
 checkpoints/
-*.bin
+*.pkl
+*.pickle
+
+# Generated outputs
+outputs/
+pipeline_out.png
+*.png
 
 # Large files
 *.zip
 *.tar
 *.tar.gz
 *.rar
+*.7z
 
 # Python
 __pycache__/
