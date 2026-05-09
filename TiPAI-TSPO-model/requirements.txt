@@ -1,0 +1,21 @@
+# Core deep learning
+torch
+torchvision
+
+# Diffusion pipelines
+diffusers
+transformers
+accelerate
+safetensors
+
+# Image and array processing
+Pillow
+numpy
+opencv-python-headless
+matplotlib
+
+# Config parsing
+PyYAML
+
+# Optional but used by seam-quality path when available
+lpips
