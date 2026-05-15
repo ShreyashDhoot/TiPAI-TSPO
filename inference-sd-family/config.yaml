@@ -1,0 +1,111 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TiPAI-TSPO  —  Master Config
+# Edit this file between runs. All paths are absolute or relative to repo root.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── HuggingFace Authentication ───────────────────────────────────────────────
+# Required for GATED models: SD 3.5 Large Turbo, SD 3.5 Medium.
+# Non-gated models (SD 1.x, SDXL) work without a token.
+#
+# Set your token via ONE of:
+#   1. Environment variable:  export HF_TOKEN=hf_...
+#   2. .env file in repo root: HF_TOKEN=hf_...
+#   3. CLI flag:              --hf-token hf_...
+#
+# After getting a token, accept the model license on HuggingFace:
+#   https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo
+#   https://huggingface.co/stabilityai/stable-diffusion-3.5-medium
+#
+# hf_token in config is intentionally NOT supported — do not put secrets
+# in config files that get committed to version control.
+
+# ── Base generator ────────────────────────────────────────────────────────────
+# Choose ONE of the supported model families:
+#
+#   SD 1.x : "runwayml/stable-diffusion-v1-5"               (512×512 output)
+#             "dreamlike-art/dreamlike-photoreal-2.0"        (any 1.x variant)
+#
+#   SD XL  : "stabilityai/stable-diffusion-xl-base-0.9"     (1024×1024 output)
+#
+#   SD 3.5 : "stabilityai/stable-diffusion-3.5-large-turbo" (1024×1024 output)
+#             "stabilityai/stable-diffusion-3.5-medium"      (1024×1024 output)
+#
+# The pipeline class is detected automatically from the model ID.
+# The inpainter ALWAYS uses its own independent VAE (never shared with the base
+# generator) to avoid latent-space mismatches across model families.
+base_sd_model: "stabilityai/stable-diffusion-3.5-large-turbo"
+
+# ── Inpainter ─────────────────────────────────────────────────────────────────
+# Must be an SD-1.x inpainting checkpoint.
+# Images are automatically resized at the generator↔inpainter boundary.
+inpainter_model: "runwayml/stable-diffusion-inpainting"
+
+# LoRA weights for the inpainter (null = skip LoRA)
+inpainter_lora_path: "weights/adapter_model.safetensors"
+inpainter_lora_scale: 1
+
+# ── Auditor ───────────────────────────────────────────────────────────────────
+auditor_weights: "complete_auditor_best.pth"
+auditor_vocab:   "vocab.json"
+
+# ── TSPO policy ───────────────────────────────────────────────────────────────
+use_tspo: true
+tspo_checkpoint:    "weights/tspo_step00800.pth"
+encoder_checkpoint: "weights/state_enc_step00800.pth"
+
+# ── Reinsertion method ────────────────────────────────────────────────────────
+# SD0_DDPM      — DDPM noise schedule blend (SD1x/SDXL only; WRONG for SD3.5)
+# SD1_DDIM_FWD  — alpha-blend by t_norm (SD1x)
+# SD2_DDIM_INV  — DDIM inversion (SD1x)
+# SD3_NULL_TEXT — null-text inversion (SD1x/SDXL)
+# SD4_FLOW_INV  — forward flow ODE projection (SD3.5 / rectified flow ONLY)
+reinsertion_method: "SD3_NULL_TEXT"
+
+# ── Generation ────────────────────────────────────────────────────────────────
+total_steps: 50
+guidance_scale: 4.5     # SD3.5 recommended (7.5 was for SD1x/SDXL)
+seed: 42
+
+# ── Flow inversion (SD4_FLOW_INV only) ───────────────────────────────────────
+# Number of Euler steps for forward ODE projection.
+# 10 is sufficient — rectified flow is a straight line so error is small.
+# Increase to 20-25 for higher accuracy at the cost of extra transformer calls.
+flow_inv_steps: 0              # keep what works
+flow_inv_hard_threshold: 0.25  # hard swap when t_norm < 0.25 (late audit steps)
+flow_inv_clean_threshold: 0.30 # redundant with steps=0, but correct for when you re-enable ODE
+flow_inv_sharpen: true
+# later steps = lower t_norm = harder swap = sharper
+
+# ── Audit schedule ────────────────────────────────────────────────────────────
+# Steps (0-indexed) at which to decode + audit during the last ~30% of diffusion.
+audit_steps: [44,49]
+
+# ── Guarded utility thresholds ────────────────────────────────────────────────
+delta: 0.01      # minimum policy_score margin over control
+tau_P: 0.25      # minimum policy_score for a candidate to be accepted
+# tau_F threshold is now meaningful: Tier-1 faithfulness spans [0, 1] after fix
+tau_F: 0.25      # minimum faithfulness (raised from 0.15 now that range is correct)
+
+# ── Inpainting ────────────────────────────────────────────────────────────────
+n_candidates: 5
+# inpaint_steps is now dynamically scaled per step (inpaint_steps_min/max below)
+inpaint_steps_min: 0
+inpaint_steps_max: 50
+
+# inpaint_prompt_mode is DEPRECATED — inpainter now receives no positive prompt.
+# Only a hard-coded negative prompt is used (see inpainting/inpainter.py).
+inpaint_prompt_mode: "none"
+
+noise_aware_mask: false
+mask_percentile: 65
+blend_feather_sigma: 5
+
+# ── Method-specific ───────────────────────────────────────────────────────────
+ddim_inv_steps: 10
+null_opt_steps: 10
+null_lr: 0.01
+
+# ── Output ────────────────────────────────────────────────────────────────────
+results_dir: "results"
+save_images: true
+show_plots: true
