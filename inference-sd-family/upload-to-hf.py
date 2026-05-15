@@ -1,7 +1,7 @@
 from huggingface_hub import HfApi
 
 # Your token from https://huggingface.co/settings/tokens
-MY_TOKEN = "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"
+MY_TOKEN = ""
 
 api = HfApi(token=MY_TOKEN)
 
