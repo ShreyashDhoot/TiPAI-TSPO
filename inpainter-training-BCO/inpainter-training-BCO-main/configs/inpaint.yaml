@@ -1,0 +1,102 @@
+model:
+    
+  # ─────────────────────────────────────────────────────────────────────────
+  # To train from the original base:
+  #   base_model: runwayml/stable-diffusion-inpainting
+  #
+  # To train from a merged checkpoint (Run N+1, N+2 ...):
+  #   base_model: /path/to/merged_v1        ← local pipeline directory
+  #   base_model: /path/to/merged_v2        ← after second merge, etc.
+  #
+  # The merged directory must contain: unet/, vae/, text_encoder/,
+  # scheduler/, tokenizer/, feature_extractor/
+  # This is exactly what merge_lora_into_base.py produces.
+  # ─────────────────────────────────────────────────────────────────────────
+  base_model: sft_merged_for_bco
+  merged_base: true  # set true when base_model points to a merged pipeline
+                       # (disables safety_checker kwarg which merged pipelines lack)
+  hf_dataset_repo: ShreyashDhoot/KTO-clean-latents
+  use_lora: true
+  lora:
+    r: 128
+    lora_alpha: 128
+    target_modules: ["to_q", "to_k", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2"]
+    lora_dropout: 0.01
+    bias: "none"
+
+data:
+  train_subdir: train
+  val_subdir: val
+  cache_dir: ./hf_cache
+
+training:
+  # Bumping LR back up for clean 10k data. 
+  # High-signal gradients don't need to be as timid.
+  lr: 8.0e-7
+  warmup_steps: 1000
+  max_steps: 5000
+  max_epochs: 10 # 10k images at batch 16 = ~625 steps per epoch. 
+  batch_size: 16
+  grad_accum_steps: 2
+  beta: 50
+  num_workers: 22
+  log_every: 50
+  save_every: 500
+  grad_clip_norm: 1.0 # Slightly higher to allow the 'Violence' torque to bite
+  mixed_precision: fp16
+
+  # ── Timestep range ──────────────────────────────────────────────────────
+  # Previously [200, 900]; now full schedule so the model sees every noise
+  # level, matching inference.  Adjust t_min to 50 if very-low-t samples
+  # cause numerical issues with your scheduler.
+  t_min: 0
+  t_max: 1000
+
+  # ── Multi-step unrolling ─────────────────────────────────────────────────
+  unroll_every: 40
+  unroll_steps: 7
+
+  # ── Prompt dropping ───────────────────────────────────────────────────────
+  # 10% of samples per batch get null conditioning, forcing the model to use
+  # spatial/visual context to decide WHERE to suppress (fixes arm smudging).
+  prompt_drop_prob: 0.20
+
+  # ── Tri-Class Batching ────────────────────────────────────────────────────
+  safe_count_per_batch: 8
+  nudity_count_per_batch: 4
+  violence_count_per_batch: 4
+
+  # ── Class-wise BCO torque ─────────────────────────────────────────────────
+  # safe=1.0   baseline anchor, don't over-reward
+  # nudity=6   strong suppression signal; was working but compressing — boost slightly
+  # violence=4 tracks nudity closely in logs; lower slightly to reduce noise
+  kto_coeffs:
+    safe: 1.0
+    nudity: 6
+    violence: 4
+
+  # ── Anchor weights ────────────────────────────────────────────────────────
+  # recon_weight:          safe images only — keep background faithful
+  # identity_weight:       safe images — strong hand/face anchor
+  # identity_weight_unsafe: unsafe images — small penalty on unmasked region
+  #                          to stop suppression bleeding into arms/background
+  recon_weight: 1
+  identity_weight: 10
+  identity_weight_unsafe: 7
+output:
+  checkpoint_dir: ./checkpoints
+  eval_dir: ./eval_outputs
+  eval_seed: 42
+  eval_mask_threshold: 0.5
+  eval_invert_mask: false
+  eval_num_inference_steps: 25
+  eval_guidance_scale: 7.5
+  wandb_project: sd-inpaint-kto-safety
+  use_wandb: true
+  wandb_mode: online  # online, offline, or disabled
+  wandb_entity: shreyashdhoot-mit-wpu
+  wandb_run_name: null
+  wandb_tags: []
+  plot_metrics: true
+  metrics_plot_dir: ./eval_outputs/metrics_plots
+  plot_smoothing_window: 5

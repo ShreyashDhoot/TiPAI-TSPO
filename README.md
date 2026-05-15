@@ -3,7 +3,7 @@
 - The script loads a specified Stable Diffusion model into the Stable Diffusion pipeline (use the last cell of `stable-diff-pipeline` as an example).  
   The specific model to be loaded is read from a YAML file.
 
-- During the last 30% timesteps (from noise to image generation):  
+- During the last n% timesteps (from noise to image generation):  
   - At selected timesteps `t`, the latent is converted to image space and sent to the **auditor**.  
     (How many times to stop in the last 30% is configured via the YAML file.)
   - If the image is categorized as **adversarial** by the auditor:

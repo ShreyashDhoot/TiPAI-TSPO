@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env/
+
+# Training outputs
+wandb/
+checkpoints/
+checkpoint-*/
+eval_outputs/
+hf_cache/
+merged_v1/
+
+# Jupyter
+.ipynb_checkpoints/
+
+sft_merged_for_bco/
+sft_refusal_ckpt/
+merged_v1
