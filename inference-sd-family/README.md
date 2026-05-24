@@ -1,6 +1,6 @@
-# TiPAI-TSPO — Modular Safe Diffusion
+# GuardPaint: Speculative Safety Decoding for Text-to-Image Generation (Stable Diffusion Family)
 
-End-to-end pipeline: send a prompt → receive a safe image.
+End-to-end speculative safety steering pipeline: send a prompt → receive a safe image.
 
 ```
 tipai/
