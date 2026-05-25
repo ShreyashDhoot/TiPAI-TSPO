@@ -1,6 +1,6 @@
 # TSPO — Tournament-Based Safe Policy Optimization
 
-Part of the **TIPAI-TSPO** project under PRAGYA AI LAB, BITS GOA. Trains a knob-selection policy over a frozen Stable Diffusion inpainting pipeline. At flagged diffusion timesteps, the policy proposes candidate hyperparameter sets, runs them through a safety auditor, and updates via policy gradient on the results.
+Part of the **GuardPaint** speculative safety decoding project under PRAGYA AI LAB, BITS GOA. Trains a knob-selection policy over a frozen Stable Diffusion inpainting pipeline. At flagged diffusion timesteps, the policy proposes candidate hyperparameter sets, runs them through a safety auditor, and updates via policy gradient on the results.
 
 ## How it works
 

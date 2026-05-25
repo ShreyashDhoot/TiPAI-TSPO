@@ -1,6 +1,6 @@
-# TiPAI-TSPO: Adversarial Auditing & Latent Reinsertion
+# GuardPaint: Speculative Safety Decoding for Text-to-Image Generation (FLUX.1)
 
-TiPAI-TSPO (Tournament-based Safety Policy Optimization) is a high-performance inference pipeline designed to audit and "steer" text-to-image generation toward safety. It detects adversarial violations (nudity, violence, etc.) mid-generation and uses a tournament-based selection process to inpaint and reinsert safe content without destroying the image trajectory.
+GuardPaint is a high-performance speculative safety decoding and inference pipeline designed to audit and "steer" text-to-image generation toward safety. It detects adversarial violations (nudity, violence, etc.) mid-generation and uses a tournament-based selection process to inpaint and speculative-reinsert safe content without destroying the image trajectory.
 
 ## Features
 - **Multi-Family Support**: Native support for **SD 1.5**, **SDXL**, and **FLUX.1** (Flow-matching).

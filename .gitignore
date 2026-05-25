@@ -15,6 +15,7 @@ checkpoints/
 outputs/
 pipeline_out.png
 *.png
+!assets/*.png
 
 # Large files
 *.zip
