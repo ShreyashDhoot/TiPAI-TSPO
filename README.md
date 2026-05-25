@@ -267,15 +267,19 @@ To validate the theoretical grounding and effectiveness of GuardPaint, we analyz
 
 ### 7.1 Latent Trajectory Alignment over Training (BCO)
 
-Due to the dense nature of the attention data, the trajectory maps are provided as interactive 3D visualizations. Click the links below to explore the alignment shifts across different model layers over the course of BCO training:
+Due to the dense nature of the attention data, the static overview image is heavily compressed. **To properly analyze the geometric shifts across training, please click the links in the table below to open the fully interactive 3D Plotly visualizations directly in your browser.**
 
 | Training Step | `attn1_to_q` Layer | `attn2_to_q` Layer |
 | :--- | :--- | :--- |
-| **Base Model** | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__Base.html) | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__Base.html) |
-| **Step 500** | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_500.html) | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_500.html) |
-| **Step 1000** | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_1000.html) | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_1000.html) |
-| **Step 2500** | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_2500.html) | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_2500.html) |
-| **Step 3300** | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_3300.html) | [Interactive Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_3300.html) |
+| **Base Model** | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__Base.html) | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__Base.html) |
+| **Step 500** | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_500.html) | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_500.html) |
+| **Step 1000** | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_1000.html) | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_1000.html) |
+| **Step 2500** | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_2500.html) | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_2500.html) |
+| **Step 3300** | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_3300.html) | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_3300.html) |
+
+<p align="center">
+  <img src="assets/subplot_figure.png" alt="BCO Trajectory Alignment Progress" width="100%">
+</p>
 
 As training progresses under BCO, you can interactively observe how the attention scores successfully suppress adversarial features while preserving semantic alignment.
 
