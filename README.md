@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="GuardPaint Banner" width="100%">
+</p>
+
 # GuardPaint: Speculative Safety Decoding for Text-to-Image Generation
 
 This repository contains the official implementation of **GuardPaint**, a comprehensive, modular framework designed to audit, align, and steer generative text-to-image models toward safety. Unlike traditional post-hoc safety checkers that discard or blur completed images, GuardPaint operates directly within the diffusion trajectory—detecting adversarial safety violations (e.g., nudity, violence) mid-generation, proposing targeted inpainting interventions via speculative policy-gradient optimization, and seamlessly reinserting safe content back into the latent space.
@@ -249,10 +253,41 @@ python3 run.py \
 
 During BCO alignment, monitor the following metrics logged via Weights & Biases (W&B):
 
-* **`loss`:** Total loss ($4 \cdot \mathcal{L}_{BCO} + \mathcal{L}_{recon} + \mathcal{L}_{identity}$). Typically decreases from ~2.5 to ~0.7 at convergence.
+* **`loss`:** Total loss ($4 \cdot \mathcal{L}\_{\text{BCO}} + \mathcal{L}\_{\text{recon}} + \mathcal{L}\_{\text{identity}}$). Typically decreases from ~2.5 to ~0.7 at convergence.
 * **`h_S` (Safe Satisfaction):** The probability that the policy outperforms the reference on safe samples. Ranges from $[0, 1]$. Typically converges around $0.80 - 0.88$.
-* **`ΔN` (Nudity Satisfaction Gap):** The satisfaction difference between nudity and safe classes ($h_{nudity} - h_{safe}$). A healthy alignment converges between $-0.35$ and $-0.50$, indicating targeted suppression.
-* **`ΔV` (Violence Satisfaction Gap):** The satisfaction difference between violence and safe classes ($h_{violence} - h_{safe}$). Typically converges between $-0.25$ and $-0.40$.
-* **`id_gap` (Identity Gap):** Measures absolute policy drift from the reference ($\| \hat{z}_{0,\theta} - \hat{z}_{0,ref} \|^2$). Kept bounded near $0.015 - 0.020$ by the quadratic identity hinge loss.
+* **`ΔN` (Nudity Satisfaction Gap):** The satisfaction difference between nudity and safe classes ($h\_{\text{nudity}} - h\_{\text{safe}}$). A healthy alignment converges between $-0.35$ and $-0.50$, indicating targeted suppression.
+* **`ΔV` (Violence Satisfaction Gap):** The satisfaction difference between violence and safe classes ($h\_{\text{violence}} - h\_{\text{safe}}$). Typically converges between $-0.25$ and $-0.40$.
+* **`id_gap` (Identity Gap):** Measures absolute policy drift from the reference ($\Vert \hat{z}\_{0,\theta} - \hat{z}\_{0,\text{ref}} \Vert^2$). Kept bounded near $0.015 - 0.020$ by the quadratic identity hinge loss.
+
+---
+
+## 7. Speculative Inpainter Alignment & Tournament Visualizations
+
+To validate the theoretical grounding and effectiveness of GuardPaint, we analyze the attention trajectories and run actual mini-tournaments during generative steering.
+
+### 7.1 Latent Trajectory Alignment over Training (BCO)
+
+The following figure (`assets/subplot_figure.png`) visualizes the change in attention map values across different layers (`attn1_to_q`, `attn2_to_q`, and the middle block attentions) and training checkpoints (`Base`, `step_500`, `step_1000`, `step_2500`, and `step_3300`). 
+
+As training progresses under BCO, the attention scores successfully suppress adversarial features while preserving semantic alignment.
+
+<p align="center">
+  <img src="assets/subplot_figure.png" alt="BCO Trajectory Alignment Progress" width="100%">
+</p>
+
+---
+
+### 7.2 Guarded Utility Tournaments (Speculative Candidate Selection)
+
+In speculative safety decoding, the TSPO policy proposes $N$ hyperparameter candidate sets. A guarded tournament evaluates each candidate based on safety, faithfulness, and blending seam quality.
+
+The following case studies illustrate the tournament execution:
+
+| Case Study | Visual Candidates | Tournament Log & Metrics | Description |
+| :--- | :--- | :--- | :--- |
+| **Tournament 1 (Step 40)** | <img src="assets/tournament_001_step_040.png" width="400"> | <img src="assets/screenshot_t1_step40.png" width="400"> | **Refusal / Fallback Keep:** All proposed hyperparameter candidates fail to meet the required safety/policy thresholds. The system safely rejects the candidate interventions and reverts to the fallback control image (replacing the unsafe wrestling opponent with a dog). |
+| **Tournament 2 (Step 44)** | <img src="assets/tournament_002_step_044.png" width="400"> | <img src="assets/screenshot_t2_step44.png" width="400"> | **Refusal / Fallback Keep:** An adversarial query triggers tournament checks. Since none of the candidates achieve a utility score superior to the control standard, the control fallback is preserved (replacing the opponent with a woman safely). |
+| **Tournament 3 (Step 48)** | <img src="assets/tournament_003_step_048.png" width="400"> | <img src="assets/screenshot_t3_step48.png" width="400"> | **Successful Intervention:** Candidate 4 achieves the highest guarded utility of **`0.1974`**, successfully passing safety audits while maximizing VGG/LPIPS similarity. The winning patch replaces the unsafe opponent with a woman in professional athletic/wrestling attire, seamlessly blended. |
+
 
 
