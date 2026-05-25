@@ -277,10 +277,6 @@ Due to the dense nature of the attention data, the static overview image is heav
 | **Step 2500** | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_2500.html) | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_2500.html) |
 | **Step 3300** | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn1_to_q__step_3300.html) | [Interactive 3D Plot](https://htmlpreview.github.io/?https://github.com/ShreyashDhoot/TiPAI-TSPO/blob/main/assets/interactive_plots/traj__attn2_to_q__step_3300.html) |
 
-<p align="center">
-  <img src="assets/subplot_figure.png" alt="BCO Trajectory Alignment Progress" width="100%">
-</p>
-
 As training progresses under BCO, you can interactively observe how the attention scores successfully suppress adversarial features while preserving semantic alignment.
 
 ---
